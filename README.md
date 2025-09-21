@@ -20,5 +20,5 @@ Target Model    |     Code       |      Methods
 :--------------:|:-----------:|:-------------------:
 ResNet18        |   Resnet_trainer_UMKD.py    |      Knowledge Distillation with UMKD
 
-## Train
+## Framework
 ![UMKD](UMKD.png)
