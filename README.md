@@ -19,3 +19,6 @@ ResNet50        |   resnet_linear_dr.py        |     Diabetic Retinopathy(5) / P
 Target Model    |     Code       |      Methods 
 :--------------:|:-----------:|:-------------------:
 ResNet18        |   Resnet_trainer_UMKD.py    |      Knowledge Distillation with UMKD
+
+## Train
+![UMKD](UMKD.png)
