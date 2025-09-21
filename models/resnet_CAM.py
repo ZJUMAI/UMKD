@@ -1,0 +1,322 @@
+import torch.nn as nn
+import math
+import torch.utils.model_zoo as model_zoo
+
+
+import os
+from PIL import Image
+import torch
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+
+__all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
+           'resnet152']
+
+model_urls = {
+    'resnet18': 'https://download.pytorch.org/models/resnet18-5c106cde.pth',
+    'resnet34': 'https://download.pytorch.org/models/resnet34-333f7ec4.pth',
+    'resnet50': 'https://download.pytorch.org/models/resnet50-19c8e357.pth',
+    'resnet101': 'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth',
+    'resnet152': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
+}
+
+
+def conv3x3(in_planes, out_planes, stride=1):
+    """3x3 convolution with padding"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=1, bias=False)
+
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, inplanes, planes, stride=1, downsample=None):
+        super(BasicBlock, self).__init__()
+        self.conv1 = conv3x3(inplanes, planes, stride)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = conv3x3(planes, planes)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = self.relu(out)
+
+        return out
+
+
+class Bottleneck(nn.Module):
+    expansion = 4
+
+    def __init__(self, inplanes, planes, stride=1, downsample=None):
+        super(Bottleneck, self).__init__()
+        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
+                               padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(planes * 4)
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = self.relu(out)
+
+        return out
+
+
+class ResNet(nn.Module):
+
+    def __init__(self, block, layers, num_classes=1000):
+        self.inplanes = 64
+        super(ResNet, self).__init__()
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
+                               bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        #最大池化层，池化窗口为 3x3，步长为 2，padding 为 1，进一步减少特征图的尺寸
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        #网络的四个主要层，每一层堆叠多个残差块，_make_layer
+        self.layer1 = self._make_layer(block, 64, layers[0])
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+        self.avgpool = nn.AvgPool2d(7, stride=1)
+        self.fc = nn.Linear(512 * block.expansion, num_classes)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n))
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+
+#####_make_layer 方法用于生成网络中的每一层（layer1、layer2、layer3、layer4）
+#####它会创建多个残差块（block），并且如果需要，添加下采样（downsample）操作
+    def _make_layer(self, block, planes, blocks, stride=1):
+        downsample = None
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv2d(self.inplanes, planes * block.expansion,
+                          kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes * block.expansion),
+            )
+
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, downsample))
+        self.inplanes = planes * block.expansion
+        for i in range(1, blocks):
+            layers.append(block(self.inplanes, planes))
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = self.avgpool(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+
+        return x
+
+
+def resnet18(pretrained=False, num_classes=None, **kwargs):
+    """Constructs a ResNet-18 model.
+
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+    """
+    #[2, 2, 2, 2]列表表示 ResNet-18 中每个阶段的 block 数量
+    model = ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
+    if pretrained:
+        model.load_state_dict(model_zoo.load_url(model_urls['resnet18']))
+    if num_classes is not None:
+        model.fc = nn.Linear(512, num_classes)
+    return model
+
+
+
+def resnet34(pretrained=False, num_classes=None, **kwargs):
+    """Constructs a ResNet-34 model.
+
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+    """
+    model = ResNet(BasicBlock, [3, 4, 6, 3], **kwargs)
+    if pretrained:
+        model.load_state_dict(model_zoo.load_url(model_urls['resnet34']))
+    if num_classes is not None:
+        model.fc = nn.Linear(512, num_classes)
+    return model
+
+
+
+def resnet50(pretrained=False, num_classes=None, **kwargs):
+    """Constructs a ResNet-50 model.
+
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+    """
+    model = ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
+    if pretrained:
+        model.load_state_dict(model_zoo.load_url(model_urls['resnet50']))
+    if num_classes is not None:
+        model.fc = nn.Linear(2048, num_classes)
+    return model
+
+
+
+def resnet101(pretrained=False, num_classes=None, **kwargs):
+    """Constructs a ResNet-101 model.
+
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+    """
+    model = ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
+    if pretrained:
+        model.load_state_dict(model_zoo.load_url(model_urls['resnet101']))
+    if num_classes is not None:
+        model.fc = nn.Linear(2048, num_classes)
+    return model
+
+
+
+def resnet152(pretrained=False, num_classes=None, **kwargs):
+    """Constructs a ResNet-152 model.
+
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+    """
+    model = ResNet(Bottleneck, [3, 8, 36, 3], **kwargs)
+    if pretrained:
+        model.load_state_dict(model_zoo.load_url(model_urls['resnet152']))
+    if num_classes is not None:
+        model.fc = nn.Linear(2048, num_classes)
+    return model
+
+
+#coding: utf-8
+import os
+from PIL import Image
+import torch
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+ 
+def draw_CAM(model, img_path, save_path, transform=None, visual_heatmap=False):
+    '''
+    绘制 Class Activation Map
+    :param model: 加载好权重的Pytorch model
+    :param img_path: 测试图片路径
+    :param save_path: CAM结果保存路径
+    :param transform: 输入图像预处理方法
+    :param visual_heatmap: 是否可视化原始heatmap（调用matplotlib）
+    :return:
+    '''
+    # 图像加载&预处理
+    img = Image.open(img_path).convert('RGB')
+    if transform:
+        img = transform(img)
+    img = img.unsqueeze(0)
+ 
+    # 获取模型输出的feature/score
+    model.eval()
+    features = model.features(img)
+    output = model.classifier(features)
+ 
+    # 为了能读取到中间梯度定义的辅助函数
+    def extract(g):
+        global features_grad
+        features_grad = g
+ 
+    # 预测得分最高的那一类对应的输出score
+    pred = torch.argmax(output).item()
+    pred_class = output[:, pred]
+ 
+    features.register_hook(extract)
+    pred_class.backward() # 计算梯度
+ 
+    grads = features_grad   # 获取梯度
+ 
+    pooled_grads = torch.nn.functional.adaptive_avg_pool2d(grads, (1, 1))
+ 
+    # 此处batch size默认为1，所以去掉了第0维（batch size维）
+    pooled_grads = pooled_grads[0]
+    features = features[0]
+    # 512是最后一层feature的通道数
+    for i in range(512):
+        features[i, ...] *= pooled_grads[i, ...]
+ 
+    # 以下部分同Keras版实现
+    heatmap = features.detach().numpy()
+    heatmap = np.mean(heatmap, axis=0)
+ 
+    heatmap = np.maximum(heatmap, 0)
+    heatmap /= np.max(heatmap)
+ 
+    # 可视化原始热力图
+    if visual_heatmap:
+        plt.matshow(heatmap)
+        plt.show()
+ 
+    img = cv2.imread(img_path)  # 用cv2加载原始图像
+    heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))  # 将热力图的大小调整为与原始图像相同
+    heatmap = np.uint8(255 * heatmap)  # 将热力图转换为RGB格式
+    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)  # 将热力图应用于原始图像
+    superimposed_img = heatmap * 0.4 + img  # 这里的0.4是热力图强度因子
+    cv2.imwrite(save_path, superimposed_img)  # 将图像保存到硬盘
+
+
+# # 示例输入
+# input_data = torch.randn(128, 3, 224, 224)  # 一张224x224的RGB图像
+
+# model = resnet50(pretrained=False, num_classes=5)
+
+# model.load_state_dict(torch.load('/data4/tongshuo/Grading/CommonFeatureLearning/results/baselines/balanced_teacher/resnet50_eyepacs_max_acc_ce_notran.pth')['model_state'])
+
+# output = model(input_data)
+
+# print(f'Output Shape: {output.shape}')
